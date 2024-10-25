@@ -2,14 +2,16 @@ name: TestK6-N4K
 
 permissions:
   contents: read
-  
+   
 on:
   workflow_dispatch: {}
   push:
     branches:
+      - 'feature/k6-test'
       - 'main'
   pull_request:
     branches:
+      - 'feature/k6-test'
       - 'main'
 
 concurrency:
