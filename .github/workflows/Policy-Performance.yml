@@ -1,0 +1,101 @@
+name: TestK6-N4K
+
+permissions:
+  contents: read
+  
+on:
+  workflow_dispatch: {}
+  push:
+    branches:
+      - 'main'
+  pull_request:
+    branches:
+      - 'main'
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  chainsaw:
+    strategy:
+      fail-fast: false
+      matrix:
+        k8s-version:
+          - name: v1.22
+            version: v1.22.17
+        tests:
+          - ^deny-force-delete$
+    runs-on: ubuntu-latest
+    name: ${{ matrix.k8s-version.name }} - ${{ matrix.tests }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@a5ac7e51b41094c92402da3b24376905380afc29 # v4.1.6
+      - name: Setup Go
+        uses: actions/setup-go@cdcb36043654635271a94b9a6d1392de5bb323a7 # v5.0.1
+        with:
+          go-version: ~1.21.1
+          cache: false
+      - name: Install Tools
+        run: |
+          set -e
+          curl -LO "https://dl.k8s.io/release/${{ matrix.k8s-version.version }}/bin/linux/amd64/kubectl"
+          sudo install -o root -g root -m 0755 kubectl /usr/local/bin/kubectl
+      - name: Install kind
+        shell: bash
+        run: |
+          set -e
+          # For AMD64 / x86_64
+          [ $(uname -m) = x86_64 ] && curl -Lo ./kind https://kind.sigs.k8s.io/dl/v0.20.0/kind-linux-amd64
+          # For ARM64
+          [ $(uname -m) = aarch64 ] && curl -Lo ./kind https://kind.sigs.k8s.io/dl/v0.20.0/kind-linux-arm64
+          chmod +x ./kind
+          sudo mv ./kind /usr/local/bin/kind
+      - name: Install nctl v4.3.0
+        run: |
+          set -e
+          wget https://nirmata-downloads.s3.us-east-2.amazonaws.com/nctl/nctl_4.3.0/nctl_4.3.0_linux_amd64.zip
+          unzip nctl_4.3.0_linux_amd64.zip
+          chmod u+x nctl
+          sudo mv nctl /usr/local/bin/nctl
+          nctl version
+      - name: Install helm
+        uses: azure/setup-helm@v4.2.0
+        with:
+          version: '3.16.1'
+        id: install
+      - name: Create kind cluster
+        run: |
+          set -e
+          kind create cluster --image kindest/node:${{ matrix.k8s-version.version }} --config ./.github/kind.yml
+      - name: Setup K6
+        uses: grafana/setup-k6-action@v1
+      - name: Install kyverno N4K
+        run: |
+          set -e
+          helm repo add nirmata https://nirmata.github.io/kyverno-charts/ && helm repo update
+          helm install kyverno --namespace kyverno --create-namespace nirmata/kyverno --set licenseManager.licenseKey=free-tier-license --version=3.2.5
+          sleep 200
+          kubectl get pods -A
+      - name: Run nctl scan on Policies Under Critical Policies
+        run: |
+          nctl scan kubernetes --policies Critical --cluster --details
+      - name: Run nctl scan on Policies Under Critical Policies
+        run: |
+          nctl scan kubernetes --policies Critical --cluster --details
+      - name: Run baseline k6 test on Kyverno N4K without any Policies
+        run: |
+          cd load-tests/k6
+          ./start-k6.sh
+          cat kyverno-k6-baseline.js-10vu-10it-logs.txt
+      - name: Install RBAC "check-all-actions-role" Policy Under Critical Policies
+        run: |
+          set -
+          kubectl create -f Policies/Critical/check-all-actions-role/check-all-actions-role.yaml
+          sleep 30
+      - name: Run k6 test with RBAC Critical Policies on Kyverno N4K
+        run: |
+          cd load-tests/k6
+          kubectl get cpol -A
+          ./start-k6.sh
+          cat kyverno-pods-robinhood.js-10vu-10it-logs.txt 
